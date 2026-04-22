@@ -8,24 +8,17 @@ __pycache__/
 # Environment
 .env
 .env.local
-*.env.*
-
-# Logs and temp files
-*.log
-*.tmp
-*.swp
-
-# Editors
-.vscode/
-.idea/
+.env.*
 
 # Dependencies
-.venv/
 venv/
-node_modules/
+.venv/
 
-# Build artifacts
-dist/
-build/
-target/
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+*~
 ```
