@@ -26,6 +26,7 @@ class Database:
         self.conn = sqlite3.connect(DB_NAME)
         self.cursor = self.conn.cursor()
         self.create_tables()
+        self.migrate_database()  # Добавляем недостающие колонки если их нет
 
     def create_tables(self):
         self.cursor.execute('''
@@ -50,6 +51,40 @@ class Database:
             )
         ''')
         self.conn.commit()
+
+    def migrate_database(self):
+        """Добавляет отсутствующие колонки в существующие таблицы"""
+        # Проверяем таблицу accounts
+        self.cursor.execute("PRAGMA table_info(accounts)")
+        columns = {col[1] for col in self.cursor.fetchall()}
+        
+        if 'session_string' not in columns:
+            print("Добавление колонки session_string в таблицу accounts...")
+            self.cursor.execute("ALTER TABLE accounts ADD COLUMN session_string TEXT")
+            self.conn.commit()
+        
+        if 'api_id' not in columns:
+            self.cursor.execute("ALTER TABLE accounts ADD COLUMN api_id INTEGER")
+            self.conn.commit()
+            
+        if 'api_hash' not in columns:
+            self.cursor.execute("ALTER TABLE accounts ADD COLUMN api_hash TEXT")
+            self.conn.commit()
+
+        # Проверяем таблицу proxies
+        self.cursor.execute("PRAGMA table_info(proxies)")
+        proxy_columns = {col[1] for col in self.cursor.fetchall()}
+        
+        if 'host' not in proxy_columns and 'ip' in proxy_columns:
+            # Переименовываем ip в host для совместимости
+            try:
+                self.cursor.execute("ALTER TABLE proxies RENAME COLUMN ip TO host")
+                self.conn.commit()
+            except:
+                pass  # Если не получается, пробуем добавить новую колонку
+        elif 'host' not in proxy_columns:
+            self.cursor.execute("ALTER TABLE proxies ADD COLUMN host TEXT")
+            self.conn.commit()
 
     def add_account(self, phone, api_id, api_hash, session_string):
         self.cursor.execute("INSERT INTO accounts (phone, api_id, api_hash, session_string) VALUES (?, ?, ?, ?)",
