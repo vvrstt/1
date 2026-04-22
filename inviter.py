@@ -1,218 +1,177 @@
-"""
-Telegram Inviter - Инвайт участников в группу через несколько аккаунтов
-"""
 import asyncio
 import csv
-import os
 import random
-from datetime import datetime, timedelta
-from telethon import TelegramClient, errors
-from telethon.tl.functions.messages import AddChatUserRequest
-from telethon.tl.types import InputPeerUser
-from dotenv import load_dotenv
+from datetime import datetime
+from telethon import TelegramClient
+from telethon.tl.functions.channels import InviteToChannelRequest, GetParticipantsRequest
+from telethon.tl.types import InputUser, ChannelParticipantsSearch
+from database import DB_NAME, init_db
+from manager import get_all_accounts, get_all_proxies
 
-# Загрузка переменных окружения
-load_dotenv()
+# Инициализация БД при старте
+init_db()
 
-API_ID = int(os.getenv('API_ID', 0))
-API_HASH = os.getenv('API_HASH', '')
-PHONE = os.getenv('PHONE', '')
-TARGET_GROUP_ID = os.getenv('TARGET_GROUP_ID', '')
-
-class TelegramInviter:
-    def __init__(self):
-        if not API_ID or not API_HASH or not PHONE:
-            raise ValueError("Необходимо настроить API_ID, API_HASH и PHONE в .env файле")
-        
-        self.client = TelegramClient('inviter_session', API_ID, API_HASH)
-        self.success_count = 0
-        self.error_count = 0
-        self.flood_wait_count = 0
+async def invite_users():
+    """Инвайт пользователей в группу через выбранные аккаунты."""
+    accounts = get_all_accounts()
+    if not accounts:
+        print("❌ Нет добавленных аккаунтов. Запустите manager.py для добавления.")
+        return
     
-    async def start(self):
-        await self.client.start(phone=PHONE)
-        print(f"✓ Авторизация успешна: {PHONE}")
+    proxies = get_all_proxies()
     
-    async def add_members(self, members_file, target_group, delay_range=(30, 60)):
-        """
-        Добавление участников в группу
-        
-        Args:
-            members_file: CSV файл со списком участников (из parser.py)
-            target_group: username или ID целевой группы
-            delay_range: диапазон задержки между добавлениями (мин, макс) в секундах
-        """
-        print(f"Загрузка участников из файла: {members_file}")
-        
-        if not os.path.exists(members_file):
-            print(f"❌ Файл {members_file} не найден")
-            return
-        
-        members = []
-        with open(members_file, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row['id']:  # Пропускаем пустые строки
-                    members.append(row)
-        
-        if not members:
-            print("❌ Нет участников для добавления")
-            return
-        
-        print(f"Найдено {len(members)} участников для добавления")
-        
-        try:
-            entity = await self.client.get_entity(target_group)
-            print(f"✓ Целевая группа найдена: {entity.title}")
-        except Exception as e:
-            print(f"❌ Ошибка при поиске целевой группы: {e}")
-            return
-        
-        print(f"\nНачинаю инвайт участников...")
-        print(f"Задержка между добавлениями: {delay_range[0]}-{delay_range[1]} сек")
-        print("-" * 60)
-        
-        for i, member in enumerate(members, 1):
-            try:
-                user_id = int(member['id'])
-                username = member.get('username', '')
-                
-                # Пропускаем пользователей без username (их нельзя добавить через инвайт)
-                if not username:
-                    print(f"[{i}/{len(members)}] Пропущено: нет username (ID: {user_id})")
-                    continue
-                
-                # Получаем объект пользователя
-                try:
-                    user = await self.client.get_entity(username)
-                except ValueError:
-                    print(f"[{i}/{len(members)}] Пропущено: пользователь @{username} не найден")
-                    self.error_count += 1
-                    continue
-                
-                # Попытка добавления в группу
-                try:
-                    await self.client(AddChatUserRequest(
-                        chat_id=entity.id,
-                        user_id=user.id,
-                        fwd_limit=0
-                    ))
-                    
-                    self.success_count += 1
-                    print(f"[{i}/{len(members)}] ✓ Добавлен: @{username}")
-                    
-                except errors.FloodWaitError as e:
-                    wait_time = e.seconds
-                    self.flood_wait_count += 1
-                    print(f"[{i}/{len(members)}] ⏳ FloodWait: ожидание {wait_time} секунд")
-                    
-                    # Ждем указанное время плюс случайная задержка
-                    await asyncio.sleep(wait_time + random.randint(5, 10))
-                    
-                    # Повторная попытка
-                    try:
-                        await self.client(AddChatUserRequest(
-                            chat_id=entity.id,
-                            user_id=user.id,
-                            fwd_limit=0
-                        ))
-                        self.success_count += 1
-                        print(f"[{i}/{len(members)}] ✓ Добавлен после ожидания: @{username}")
-                    except Exception as retry_error:
-                        print(f"[{i}/{len(members)}] ❌ Ошибка после ожидания: {retry_error}")
-                        self.error_count += 1
-                    
-                except errors.UserPrivacyRestrictedError:
-                    print(f"[{i}/{len(members)}] ❌ Приватность: @{username} запретил добавление")
-                    self.error_count += 1
-                    
-                except errors.UserNotMutualContactError:
-                    print(f"[{i}/{len(members)}] ❌ Не контакт: @{username} не является контактом")
-                    self.error_count += 1
-                    
-                except errors.UserAlreadyParticipantError:
-                    print(f"[{i}/{len(members)}] ⚠ Уже участник: @{username}")
-                    
-                except errors.UserIsBotError:
-                    print(f"[{i}/{len(members)}] ❌ Бот: @{username} является ботом")
-                    self.error_count += 1
-                    
-                except Exception as e:
-                    print(f"[{i}/{len(members)}] ❌ Ошибка: {e}")
-                    self.error_count += 1
-                
-                # Случайная задержка между добавлениями
-                if i < len(members):
-                    delay = random.randint(delay_range[0], delay_range[1])
-                    print(f"   → Ожидание {delay} сек...")
-                    await asyncio.sleep(delay)
-                
-            except KeyboardInterrupt:
-                print("\n\n⚠ Прервано пользователем")
-                break
-            except Exception as e:
-                print(f"[{i}/{len(members)}] ❌ Критическая ошибка: {e}")
-                self.error_count += 1
-                continue
-        
-        # Итоговая статистика
-        print("\n" + "=" * 60)
-        print("ИТОГИ:")
-        print(f"✓ Успешно добавлено: {self.success_count}")
-        print(f"❌ Ошибок: {self.error_count}")
-        print(f"⏳ FloodWait ожиданий: {self.flood_wait_count}")
-        print(f"📊 Всего обработано: {self.success_count + self.error_count}")
-        print("=" * 60)
+    # Выбор файла с пользователями
+    print("\n📂 Доступные файлы с пользователями:")
+    import os
+    csv_files = [f for f in os.listdir('.') if f.startswith('parsed_users_') and f.endswith('.csv')]
+    if not csv_files:
+        print("❌ Нет файлов parsed_users_*.csv. Сначала запустите парсер.")
+        return
     
-    async def close(self):
-        await self.client.disconnect()
-
-
-async def main():
-    print("Telegram Inviter - Инвайт участников в группу")
-    print("=" * 60)
-    
-    inviter = TelegramInviter()
+    for i, f in enumerate(csv_files, 1):
+        print(f"{i}. {f}")
     
     try:
-        await inviter.start()
+        file_idx = int(input("\nВыберите номер файла: ")) - 1
+        if file_idx < 0 or file_idx >= len(csv_files):
+            print("❌ Неверный номер.")
+            return
+        csv_file = csv_files[file_idx]
+    except ValueError:
+        print("❌ Введите число.")
+        return
+    
+    # Загрузка пользователей из CSV
+    users_to_invite = []
+    with open(csv_file, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row['user_id']:
+                users_to_invite.append({
+                    'user_id': int(row['user_id']),
+                    'username': row['username']
+                })
+    
+    print(f"📊 Загружено {len(users_to_invite)} пользователей из {csv_file}")
+    
+    # Выбор аккаунтов для инвайта
+    print("\n📋 Доступные аккаунты:")
+    for i, (phone, api_id, api_hash, session) in enumerate(accounts, 1):
+        print(f"{i}. {phone}")
+    
+    print("\nВыберите аккаунты для инвайта (через запятую, например: 1,2,3 или все - нажмите Enter)")
+    acc_input = input("Номера аккаунтов: ").strip()
+    
+    if acc_input:
+        try:
+            selected_indices = [int(x.strip()) - 1 for x in acc_input.split(',')]
+            selected_accounts = [accounts[i] for i in selected_indices if 0 <= i < len(accounts)]
+        except (ValueError, IndexError):
+            print("❌ Неверный формат. Будут использованы все аккаунты.")
+            selected_accounts = accounts
+    else:
+        selected_accounts = accounts
+    
+    if not selected_accounts:
+        print("❌ Нет выбранных аккаунтов.")
+        return
+    
+    target_link = input("\nВведите ссылку на группу, куда добавлять пользователей: ").strip()
+    if not target_link:
+        print("❌ Ссылка обязательна.")
+        return
+    
+    # Настройки инвайта
+    try:
+        delay_min = int(input("Минимальная задержка между действиями (сек): ") or "5")
+        delay_max = int(input("Максимальная задержка между действиями (сек): ") or "10")
+        max_per_account = int(input("Максимум пользователей на аккаунт (0 = без лимита): ") or "50")
+    except ValueError:
+        delay_min, delay_max, max_per_account = 5, 10, 50
+    
+    success_count = 0
+    error_count = 0
+    user_index = 0
+    
+    for acc_idx, (phone, api_id, api_hash, session_name) in enumerate(selected_accounts):
+        print(f"\n{'='*60}")
+        print(f"🔄 Работа с аккаунтом: {phone}")
+        print(f"{'='*60}")
         
-        # Запрос файла с участниками
-        members_file = input("\nВведите путь к CSV файлу с участниками (по умолчанию parsed_members.csv): ").strip()
-        if not members_file:
-            members_file = 'parsed_members.csv'
+        # Настройка прокси
+        proxy = None
+        if proxies and len(proxies) >= acc_idx + 1:
+            ptype, ip, port, user, pwd = proxies[acc_idx % len(proxies)]
+            if ptype == 'socks5':
+                proxy = {'proxy_type': 'socks5', 'addr': ip, 'port': port, 'username': user, 'password': pwd}
+            elif ptype == 'http':
+                proxy = {'proxy_type': 'http', 'addr': ip, 'port': port, 'username': user, 'password': pwd}
+            elif ptype == 'mtproto':
+                proxy = {'proxy_type': 'mtproto', 'addr': ip, 'port': port, 'secret': pwd or ''}
         
-        # Запрос целевой группы
-        target_group = input("Введите username или ID целевой группы: ").strip()
-        if not target_group:
-            if TARGET_GROUP_ID:
-                target_group = TARGET_GROUP_ID
-                print(f"Используется группа из .env: {target_group}")
-            else:
-                print("❌ Целевая группа не указана. Выход.")
-                return
+        client = TelegramClient(session_name, int(api_id), api_hash, proxy=proxy)
         
-        # Запрос диапазона задержки
-        delay_input = input("Диапазон задержки в секундах (мин-макс, по умолчанию 30-60): ").strip()
-        if delay_input and '-' in delay_input:
-            try:
-                min_delay, max_delay = map(int, delay_input.split('-'))
-                delay_range = (min_delay, max_delay)
-            except ValueError:
-                delay_range = (30, 60)
-        else:
-            delay_range = (30, 60)
-        
-        # Запуск инвайта
-        await inviter.add_members(members_file, target_group, delay_range)
-        
-        print("\n✓ Инвайт завершен!")
-        
-    except Exception as e:
-        print(f"\n❌ Ошибка: {e}")
-    finally:
-        await inviter.close()
+        try:
+            await client.start(phone)
+            print(f"✅ Аккаунт {phone} авторизован.")
+            
+            entity = await client.get_entity(target_link)
+            print(f"🎯 Целевая группа: {entity.title}")
+            
+            count_for_account = 0
+            limit_reached = False
+            
+            while user_index < len(users_to_invite):
+                if max_per_account > 0 and count_for_account >= max_per_account:
+                    print(f"⚠️ Достигнут лимит {max_per_account} для этого аккаунта.")
+                    limit_reached = True
+                    break
+                
+                user_data = users_to_invite[user_index]
+                user_index += 1
+                
+                try:
+                    user = await client.get_entity(user_data['user_id'])
+                    await client(InviteToChannelRequest(entity, [user]))
+                    
+                    success_count += 1
+                    count_for_account += 1
+                    print(f"✅ Добавлен: {user_data['username'] or user_data['user_id']} ({success_count})")
+                    
+                except Exception as e:
+                    error_count += 1
+                    err_msg = str(e)
+                    if "FLOOD_WAIT" in err_msg:
+                        print(f"⏸️ FLOOD_WAIT! Пауза 10 минут...")
+                        await asyncio.sleep(600)
+                        continue
+                    elif "USER_PRIVACY_RESTRICTED" in err_msg:
+                        print(f"⚠️ Приватность пользователя ограничена.")
+                    elif "USER_ALREADY_PARTICIPANT" in err_msg:
+                        print(f"ℹ️ Пользователь уже в группе.")
+                    else:
+                        print(f"❌ Ошибка: {err_msg}")
+                
+                # Случайная задержка
+                delay = random.uniform(delay_min, delay_max)
+                await asyncio.sleep(delay)
+            
+            if limit_reached:
+                continue
+                
+        except Exception as e:
+            print(f"❌ Ошибка с аккаунтом {phone}: {e}")
+        finally:
+            await client.disconnect()
+    
+    print(f"\n{'='*60}")
+    print(f"📊 ИТОГИ:")
+    print(f"✅ Успешно: {success_count}")
+    print(f"❌ Ошибки: {error_count}")
+    print(f"📁 Файл: {csv_file}")
+    print(f"{'='*60}")
 
-
-if __name__ == '__main__':
-    asyncio.run(main())
+if __name__ == "__main__":
+    print("=== TELEGRAM INVITER ===")
+    print("Инвайт пользователей из спаршенного файла")
+    asyncio.run(invite_users())
